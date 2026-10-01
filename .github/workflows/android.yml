@@ -78,6 +78,11 @@ jobs:
           godot --headless --export-debug Android build/MYCARD.apk 2>&1 | tee /tmp/export.log
           test -s build/MYCARD.apk
           "$ANDROID_HOME/build-tools/35.0.1/apksigner" verify build/MYCARD.apk
+          "$ANDROID_HOME/build-tools/35.0.1/aapt" dump badging build/MYCARD.apk > build/apk-info.txt
+          if "$ANDROID_HOME/build-tools/35.0.1/aapt" dump permissions build/MYCARD.apk | grep -q 'android.permission.INTERNET'; then
+            echo 'Offline build unexpectedly requests network permission'
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: MYCARD-Android-${{ github.run_number }}

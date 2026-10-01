@@ -99,6 +99,10 @@ func _ready() -> void:
 	await get_tree().create_timer(1.5).timeout
 	check(Store.data.coins == balance_before-100 and app.last_opened.size() == 3,"purchase button completes debit and reveal")
 	await screenshot("06-card")
+	app.view_cards([Store.data.series[0].cards[2]],0,Store.data.series[0].back)
+	await screenshot("06b-holographic")
+	app.overlay.get_child(1).item.rotation.y=PI-0.2
+	await screenshot("06c-back")
 	app.close_overlay()
 	app.navigate("收藏")
 	await screenshot("07-collection")
@@ -106,6 +110,9 @@ func _ready() -> void:
 	await screenshot("08-ledger")
 	app.edit_series(Store.data.series[0])
 	await screenshot("09-series-edit")
+	app.close_overlay()
+	app.show_licenses()
+	await get_tree().process_frame
 	app.close_overlay()
 	print("TEST_RESULT: %d failures" % failures)
 	get_tree().quit(1 if failures else 0)
