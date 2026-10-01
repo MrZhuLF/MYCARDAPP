@@ -1,0 +1,76 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Godot and export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable"
+          curl -fL --retry 3 "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -o /tmp/godot.zip
+          curl -fL --retry 3 "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -o /tmp/templates.zip
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          sudo install -m 755 "/tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -j -q /tmp/templates.zip 'templates/android_debug.apk' 'templates/android_release.apk' 'templates/version.txt' -d "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+      - name: Configure Android SDK and test signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.1"
+          mkdir -p "$HOME/.config/godot" "$HOME/.android" build
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+          keytool -genkeypair -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -storepass android -keypass android -dname "CN=MYCARD Debug" -keyalg RSA -keysize 2048 -validity 10000
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+      - name: Import and test offline behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --editor --import --quit 2>&1 | tee /tmp/import.log
+          if grep -E 'SCRIPT ERROR|Parse Error|Compile Error' /tmp/import.log; then exit 1; fi
+          godot --headless res://tests/run.tscn -- --test 2>&1 | tee /tmp/tests.log
+          if grep -E 'SCRIPT ERROR|TEST_RESULT: [1-9]' /tmp/tests.log; then exit 1; fi
+      - name: Export APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --export-debug Android build/MYCARD.apk 2>&1 | tee /tmp/export.log
+          test -s build/MYCARD.apk
+          "$ANDROID_HOME/build-tools/35.0.1/apksigner" verify build/MYCARD.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MYCARD-Android-${{ github.run_number }}
+          path: build/MYCARD.apk
+          if-no-files-found: error
+          retention-days: 30
