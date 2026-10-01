@@ -4,9 +4,16 @@ uniform sampler2D artwork : source_color, filter_linear_mipmap;
 uniform int effect = 0;
 uniform vec4 tint : source_color = vec4(1.0);
 uniform bool wrapper = false;
+uniform float artwork_aspect = 0.7142857;
 vec3 spectrum(float t) { return 0.55 + 0.45*cos(6.28318*(vec3(0.0,0.33,0.67)+t)); }
 void fragment() {
- vec4 art = texture(artwork, UV);
+ vec2 art_uv = UV;
+ if (wrapper) {
+  float surface_aspect = 1.0 / 1.52;
+  if (artwork_aspect > surface_aspect) { art_uv.x = (UV.x-0.5)*surface_aspect/artwork_aspect+0.5; }
+  else { art_uv.y = (UV.y-0.5)*artwork_aspect/surface_aspect+0.5; }
+ }
+ vec4 art = texture(artwork, art_uv);
  vec3 base = art.rgb*tint.rgb;
 	SPECULAR = 0.18;
  float angle = dot(normalize(VIEW), NORMAL);

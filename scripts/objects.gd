@@ -37,6 +37,7 @@ static func art_material(texture: Texture2D, effect: int, wrapper = false) -> Sh
 	mat.set_shader_parameter("artwork", texture)
 	mat.set_shader_parameter("effect", effect)
 	mat.set_shader_parameter("wrapper", wrapper)
+	mat.set_shader_parameter("artwork_aspect", float(texture.get_width())/maxi(1,texture.get_height()))
 	return mat
 
 static func face(parent: Node3D, dimensions: Vector2, z: float, mat: Material, back = false) -> MeshInstance3D:

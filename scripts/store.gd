@@ -186,7 +186,9 @@ func default_back() -> Array:
 	return [layer("shape", "底色", [0,0,600,840], "", "#142633"), layer("image", "卡背", [30,30,540,780], "res://assets/back.svg")]
 
 func new_card(index = 0) -> Dictionary:
-	return {"id": uid(), "name": "新卡牌", "grade": "N", "effect": 0, "remaining": 20, "shared_back": true, "front": default_front(index), "back": default_back(), "attributes": ""}
+	var front = default_front(index)
+	front[4].value = "新卡牌"
+	return {"id": uid(), "name": "新卡牌", "grade": "N", "effect": 0, "remaining": 20, "shared_back": true, "front": front, "back": default_back(), "attributes": "ATK  120     /     DEF  80"}
 
 func new_series() -> Dictionary:
 	return {"id": uid(), "name": "新系列", "price": 100, "pack_size": 3, "cover": "", "pack_back": "", "back": default_back(), "cards": []}

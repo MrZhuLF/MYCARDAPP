@@ -35,7 +35,7 @@ func _ready() -> void:
 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	if not shared_only:
 		var name_field = UI.field(body,draft.name,"卡牌名称")
-		name_field.text_changed.connect(func(t): draft.name=t; mark_edit())
+		name_field.text_changed.connect(func(t): draft.name=t; update_text_placeholder("名称",t); mark_edit())
 		var info = UI.row(body)
 		var grade = UI.select(info,Store.GRADES, maxi(0,Store.GRADES.find(draft.grade)))
 		var effect = UI.select(info,["无特效","金光","镭射","彩色"],int(draft.effect))
@@ -45,7 +45,7 @@ func _ready() -> void:
 		UI.label(stock_row,"剩余张数")
 		UI.number(stock_row,draft.remaining).value_changed.connect(func(v): draft.remaining=int(v); mark_edit())
 		var attrs = UI.field(body,draft.get("attributes",""),"属性，例如 ATK 120 / DEF 80")
-		attrs.text_changed.connect(func(t): draft.attributes=t; mark_edit())
+		attrs.text_changed.connect(func(t): draft.attributes=t; update_text_placeholder("属性",t); mark_edit())
 		var shared = CheckButton.new()
 		shared.text = "使用系列通用卡背"
 		shared.button_pressed = draft.get("shared_back",true)
@@ -86,11 +86,17 @@ func _ready() -> void:
 	UI.button(template_row,"应用",apply_template)
 	var template_actions = UI.row(body)
 	UI.button(template_actions,"另存模板",save_template,true)
+	UI.button(template_actions,"更新模板",update_template,true)
 	UI.button(template_actions,"删除模板",delete_template,true)
 	refresh_templates()
 	refresh_canvas()
 	saved_state = draft.duplicate(true)
 	undo_stack = [saved_state.duplicate(true)]
+
+func update_text_placeholder(label: String, text: String) -> void:
+	for l in draft.front:
+		if l.kind == "text" and l.label == label and l.get("placeholder",true):
+			l.value = text
 
 func back_layers() -> Array:
 	if draft.get("shared_back",false) and not shared_only:
@@ -313,6 +319,27 @@ func delete_template() -> void:
 		refresh_templates(); dialog.queue_free())
 	dialog.canceled.connect(dialog.queue_free)
 	dialog.popup_centered()
+
+func update_template() -> void:
+	if templates.selected < 0:
+		return
+	var index = templates.selected
+	var dialog = ConfirmationDialog.new()
+	dialog.title = "更新模板"
+	var input = LineEdit.new()
+	input.text = Store.data.templates[index].name
+	dialog.add_child(input)
+	add_child(dialog)
+	dialog.confirmed.connect(func():
+		var before = Store.data.duplicate(true)
+		Store.data.templates[index].name = input.text
+		Store.data.templates[index].front = draft.front.duplicate(true)
+		Store.data.templates[index].back = draft.back.duplicate(true)
+		if Store.commit(before): refresh_templates(); templates.select(index); notify.emit("模板已更新")
+		else: notify.emit(Store.last_error)
+		dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.popup_centered(Vector2i(330,140))
 
 func save() -> void:
 	if draft.name.strip_edges().is_empty():
