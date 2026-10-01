@@ -68,9 +68,13 @@ static func pack(parent: Node, data: Dictionary) -> Node3D:
 	var silver = material(Color("b3c1c8"),0.86,0.27)
 	# Slightly inflated wrapper with pinched edges and physically ridged seals.
 	var cover = Store.texture(data.get("cover", ""))
+	if not data.get("pack_front_layers",[]).is_empty():
+		cover = art_viewport(root,data.pack_front_layers).get_texture()
 	if cover == null:
 		cover = load("res://assets/art_0.svg")
 	var back = Store.texture(data.get("pack_back", ""))
+	if not data.get("pack_back_layers",[]).is_empty():
+		back = art_viewport(root,data.pack_back_layers).get_texture()
 	if back == null:
 		back = load("res://assets/back.svg")
 	box(root,Vector3(1.0,1.52,0.09),Vector3.ZERO,silver)

@@ -153,7 +153,7 @@ func series_list(query = "") -> void:
 			var panel = PanelContainer.new()
 			list.add_child(panel)
 			var row = UI.row(panel)
-			thumbnail(row,[Store.layer("image","",[0,0,600,840],s.cover)])
+			thumbnail(row,Store.pack_layers(s))
 			var info = UI.column(row)
 			info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			var label = UI.label(info,s.name,20)
@@ -212,14 +212,7 @@ func edit_series(original: Dictionary) -> void:
 	var actions = UI.row(col)
 	UI.button(actions,"返回",close_overlay,true)
 	UI.button(actions,"保存",func():
-		if s.name.strip_edges().is_empty(): toast("请输入系列名称"); return
-		var before = Store.data.duplicate(true)
-		var existing = Store.series_by_id(s.id)
-		if existing.is_empty(): Store.data.series.append(s)
-		else:
-			for key in ["name","price","pack_size","cover","pack_back"]: existing[key]=s[key]
-		if Store.commit(before): close_overlay(); navigate("设计")
-		else: toast(Store.last_error),true)
+		if save_series(s): close_overlay(); navigate("设计"),true)
 	UI.field(col,s.name,"系列名称").text_changed.connect(func(t): s.name=t)
 	var price_row = UI.row(col)
 	UI.label(price_row,"每包价格")
@@ -229,16 +222,51 @@ func edit_series(original: Dictionary) -> void:
 	UI.number(count_row,s.pack_size,1,30).value_changed.connect(func(v): s.pack_size=int(v))
 	for pair in [["牌包封面","cover"],["牌包背面","pack_back"]]:
 		var row = UI.row(col)
-		var thumb = thumbnail(row,[Store.layer("image","",[0,0,600,840],s[pair[1]])],94)
+		var thumb = thumbnail(row,Store.pack_layers(s,pair[1] == "pack_back"),94)
 		var key = pair[1]
-		UI.button(row,pair[0],func(): pick_image(func(path): s[key]=path; thumb.layers[0].value=path; thumb.queue_redraw()),true)
+		var design_key = "pack_back_layers" if key == "pack_back" else "pack_front_layers"
+		var actions_col = UI.column(row)
+		actions_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UI.label(actions_col,pair[0])
+		var controls = UI.row(actions_col)
+		UI.button(controls,"导入",func(): pick_image(func(path): s[key]=path; s[design_key]=[]; thumb.set_layers(Store.pack_layers(s,key == "pack_back"))),true)
+		UI.button(controls,"设计",func():
+			if not save_series(s): return
+			close_overlay(); selected_series=s.id; edit_pack_surface(design_key),true)
 	if not Store.series_by_id(s.id).is_empty():
-		UI.button(col,"编辑系列通用卡背",func(): close_overlay(); selected_series=s.id; edit_shared_back())
+		UI.button(col,"编辑系列通用卡背",func():
+			if not save_series(s): return
+			close_overlay(); selected_series=s.id; edit_shared_back())
 		UI.button(col,"删除系列",func(): confirm("删除系列及设计？已收藏的卡牌会保留。",func():
 			var before = Store.data.duplicate(true)
 			Store.data.series = Store.data.series.filter(func(item): return item.id != s.id)
 			if Store.commit(before): close_overlay(); navigate("设计")
 			else: toast(Store.last_error)))
+
+func save_series(s: Dictionary) -> bool:
+	if s.name.strip_edges().is_empty():
+		toast("请输入系列名称")
+		return false
+	var before = Store.data.duplicate(true)
+	var existing = Store.series_by_id(s.id)
+	if existing.is_empty(): Store.data.series.append(s.duplicate(true))
+	else:
+		for key in ["name","price","pack_size","cover","pack_back","pack_front_layers","pack_back_layers"]:
+			existing[key] = s.get(key,[] if key.ends_with("layers") else "")
+	if Store.commit(before): return true
+	toast(Store.last_error)
+	return false
+
+func edit_pack_surface(surface: String) -> void:
+	editor = CardEditor.new()
+	editor.series_id = selected_series
+	editor.series_surface = surface
+	editor.shared_only = true
+	editor.side = "back" if surface == "pack_back_layers" else "front"
+	editor.draft = Store.new_card()
+	editor.draft.shared_back = false
+	editor.draft[editor.side] = Store.pack_layers(Store.series_by_id(selected_series),editor.side == "back").duplicate(true)
+	connect_editor()
 
 func edit_card(card: Dictionary) -> void:
 	editor = CardEditor.new()
@@ -261,7 +289,18 @@ func connect_editor() -> void:
 	add_child(editor)
 	editor.image_requested.connect(pick_image)
 	editor.notify.connect(toast)
-	editor.preview_requested.connect(func(card,back): view_cards([card],0,back))
+	editor.preview_requested.connect(func(card,back):
+		if not editor.series_surface.is_empty():
+			var s = Store.series_by_id(editor.series_id).duplicate(true)
+			s[editor.series_surface] = card[editor.side].duplicate(true)
+			var dialog = new_overlay()
+			var view = preview_stage(dialog)
+			view.show_pack(s)
+			if editor.side == "back": view.item.rotation.y=PI-0.2
+			UI.button(overlay_bar(dialog),"‹",close_overlay)
+		else:
+			view_cards([card],0,back)
+			if editor.side == "back": overlay.get_child(1).item.rotation.y=PI-0.2)
 	editor.closed.connect(func():
 		editor.queue_free(); editor=null
 		if selected_series.is_empty(): series_list()
@@ -451,5 +490,21 @@ func settings() -> void:
 	UI.button(col,"恢复备份",func(): file_dialog(FileDialog.FILE_MODE_OPEN_FILE,PackedStringArray(["*.zip ; 备份"]),func(path): confirm("用备份替换当前数据？",func():
 		if Store.restore_backup(path): close_overlay(); navigate("货架"); toast("已恢复")
 		else: toast(Store.last_error))))
+	UI.button(col,"开源许可",show_licenses)
 	UI.label(col,"MYCARD  0.1.0",14,Color("8398a3"))
 	UI.label(col,"离线存储 · 原图备份",14,Color("8398a3"))
+
+func show_licenses() -> void:
+	var dialog = new_overlay()
+	var panel = PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left=18; panel.offset_right=-18; panel.offset_top=36; panel.offset_bottom=-24
+	dialog.add_child(panel)
+	var col = UI.column(panel)
+	UI.button(col,"返回",settings)
+	var text = TextEdit.new()
+	text.editable=false
+	text.wrap_mode=TextEdit.LINE_WRAPPING_BOUNDARY
+	text.size_flags_vertical=Control.SIZE_EXPAND_FILL
+	text.text=Engine.get_license_text()+"\n\n"+JSON.stringify(Engine.get_copyright_info(),"\t")+"\n\n"+JSON.stringify(Engine.get_license_info(),"\t")
+	col.add_child(text)

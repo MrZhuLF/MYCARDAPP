@@ -19,6 +19,9 @@ func _ready() -> void:
 	Store.seed_demo()
 	Store.writable = true
 	check(Store.save_data(),"initial save")
+	var invalid = Store.data.duplicate(true)
+	invalid.series[0].cards[0].front[0].w = "invalid"
+	check(not Store.valid_data(invalid),"invalid layer types are rejected before restoring")
 	var s = Store.data.series[0]
 	var initial = Store.stock(s)
 	var result = Store.purchase(s.id)
@@ -79,15 +82,22 @@ func _ready() -> void:
 	check(app.editor.draft.front.size() == 7,"editor undo restores layers")
 	app.editor.redo()
 	check(app.editor.draft.front.size() == 8,"editor redo restores changes")
+	app.editor.canvas.active=7
 	app.editor.delete_layer()
+	check(app.editor.draft.front.size() == 7,"editor deletes selected layer")
 	app.editor.save()
 	await get_tree().process_frame
+	app.edit_pack_surface("pack_front_layers")
+	app.editor.add_layer("text")
+	app.editor.save()
+	await get_tree().process_frame
+	check(Store.data.series[0].pack_front_layers.size() == 2,"pack cover uses the same layer editor")
 	app.open_pack(Store.data.series[0].id)
 	await screenshot("05-pack")
-	var draw = Store.purchase(Store.data.series[0].id)
-	var view = app.overlay.get_child(1)
-	await view.tear()
-	app.view_cards(draw.cards)
+	var balance_before = int(Store.data.coins)
+	app.overlay.get_child(3).get_child(0).pressed.emit()
+	await get_tree().create_timer(1.5).timeout
+	check(Store.data.coins == balance_before-100 and app.last_opened.size() == 3,"purchase button completes debit and reveal")
 	await screenshot("06-card")
 	app.close_overlay()
 	app.navigate("收藏")

@@ -9,6 +9,7 @@ var series_id = ""
 var original_id = ""
 var draft: Dictionary
 var shared_only = false
+var series_surface = ""
 var side = "front"
 var canvas: CardCanvas
 var list: ItemList
@@ -37,9 +38,13 @@ func _ready() -> void:
 		var name_field = UI.field(body,draft.name,"卡牌名称")
 		name_field.text_changed.connect(func(t): draft.name=t; update_text_placeholder("名称",t); mark_edit())
 		var info = UI.row(body)
-		var grade = UI.select(info,Store.GRADES, maxi(0,Store.GRADES.find(draft.grade)))
+		var grade = UI.field(info,draft.grade,"评级")
 		var effect = UI.select(info,["无特效","金光","镭射","彩色"],int(draft.effect))
-		grade.item_selected.connect(func(i): draft.grade=Store.GRADES[i]; draft.effect=i; effect.select(i); mark_edit())
+		grade.text_changed.connect(func(text):
+			draft.grade=text
+			var preset = Store.GRADES.find(text.to_upper())
+			if preset >= 0: draft.effect=preset; effect.select(preset)
+			mark_edit())
 		effect.item_selected.connect(func(i): draft.effect=i; mark_edit())
 		var stock_row = UI.row(body)
 		UI.label(stock_row,"剩余张数")
@@ -349,7 +354,9 @@ func save() -> void:
 	var s = Store.series_by_id(series_id)
 	if s.is_empty():
 		return
-	if shared_only:
+	if not series_surface.is_empty():
+		s[series_surface] = draft[side].duplicate(true)
+	elif shared_only:
 		s.back = draft.back.duplicate(true)
 	else:
 		var found = false

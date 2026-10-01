@@ -44,15 +44,51 @@ func valid_data(value: Variant) -> bool:
 	for key in ["series", "templates", "owned", "ledger"]:
 		if not value.get(key) is Array:
 			return false
-	if not value.get("coins") is float and not value.get("coins") is int:
+	if not valid_number(value.get("coins")) or value.coins < 0:
 		return false
 	for s in value.series:
-		if not s is Dictionary or not s.get("cards") is Array or not s.has("id"):
+		if not s is Dictionary or not s.get("cards") is Array or not s.get("id") is String or not s.get("name") is String:
+			return false
+		if not valid_number(s.get("price")) or s.price < 0 or not valid_number(s.get("pack_size")) or s.pack_size < 1:
+			return false
+		if not s.get("cover") is String or not s.get("pack_back") is String or not valid_layers(s.get("back")):
+			return false
+		if not valid_layers(s.get("pack_front_layers",[])) or not valid_layers(s.get("pack_back_layers",[])):
 			return false
 		for c in s.cards:
-			if not c is Dictionary or not c.has("remaining") or not c.get("front") is Array or not c.get("back") is Array:
+			if not valid_card(c):
 				return false
+	for c in value.owned:
+		if not valid_card(c) or not c.get("series_name") is String or not c.get("owned_id") is String:
+			return false
+	for t in value.templates:
+		if not t is Dictionary or not t.get("name") is String or not t.get("id") is String or not valid_layers(t.get("front")) or not valid_layers(t.get("back")):
+			return false
+	for e in value.ledger:
+		if not e is Dictionary or not valid_number(e.get("amount")) or not e.get("note") is String or not e.get("time") is String:
+			return false
 	return true
+
+func valid_number(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value))
+
+func valid_layers(value: Variant) -> bool:
+	if not value is Array: return false
+	for l in value:
+		if not l is Dictionary: return false
+		for key in ["id","kind","label","value","color"]:
+			if not l.get(key) is String: return false
+		if l.kind not in ["image","text","shape"]: return false
+		for key in ["x","y","w","h"]:
+			if not valid_number(l.get(key)): return false
+		if l.w <= 0 or l.h <= 0 or not valid_number(l.get("rotation",0)) or not valid_number(l.get("font_size",30)): return false
+	return true
+
+func valid_card(value: Variant) -> bool:
+	if not value is Dictionary: return false
+	for key in ["id","name","grade"]:
+		if not value.get(key) is String: return false
+	return valid_number(value.get("remaining")) and value.remaining >= 0 and valid_number(value.get("effect")) and value.effect >= 0 and value.effect <= 3 and valid_layers(value.get("front")) and valid_layers(value.get("back"))
 
 func parse_json(text: String) -> Variant:
 	var parser = JSON.new()
@@ -67,7 +103,11 @@ func save_data() -> bool:
 		return false
 	file.store_string(JSON.stringify(data, "\t"))
 	file.flush()
+	var write_error = file.get_error()
 	file.close()
+	if write_error != OK:
+		last_error = "存档写入不完整"
+		return false
 	# Keep an intact previous generation until the replacement is fully written.
 	if FileAccess.file_exists(SAVE) and valid_data(parse_json(FileAccess.get_file_as_string(SAVE))):
 		if DirAccess.copy_absolute(SAVE, SAVE + ".bak") != OK:
@@ -166,7 +206,12 @@ func import_image(path: String) -> String:
 			last_error = "图片复制失败"
 			return ""
 		file.store_buffer(bytes)
+		var write_error = file.get_error()
 		file.close()
+		if write_error != OK:
+			DirAccess.remove_absolute(target)
+			last_error = "图片写入不完整"
+			return ""
 	return target
 
 func image_format(bytes: PackedByteArray) -> String:
@@ -175,7 +220,7 @@ func image_format(bytes: PackedByteArray) -> String:
 	if bytes[0] == 255 and bytes[1] == 216 and bytes[2] == 255: return "jpg"
 	if bytes.slice(0,4).get_string_from_ascii() == "RIFF" and bytes.slice(8,12).get_string_from_ascii() == "WEBP": return "webp"
 	if bytes[0] == 66 and bytes[1] == 77: return "bmp"
-	if bytes[0] in [60,32,9,10,13,239] and bytes.slice(0,mini(2048,bytes.size())).get_string_from_utf8().contains("<svg"): return "svg"
+	if bytes[0] in [60,32,9,10,13,239] and bytes.slice(0,mini(2048,bytes.size())).get_string_from_ascii().contains("<svg"): return "svg"
 	if bytes.size() > 18 and bytes[1] in [0,1] and bytes[2] in [1,2,3,9,10,11] and bytes[16] in [8,16,24,32]: return "tga"
 	return ""
 
@@ -211,7 +256,15 @@ func new_card(index = 0) -> Dictionary:
 	return {"id": uid(), "name": "新卡牌", "grade": "N", "effect": 0, "remaining": 20, "shared_back": true, "front": front, "back": default_back(), "attributes": "ATK  120     /     DEF  80"}
 
 func new_series() -> Dictionary:
-	return {"id": uid(), "name": "新系列", "price": 100, "pack_size": 3, "cover": "", "pack_back": "", "back": default_back(), "cards": []}
+	return {"id": uid(), "name": "新系列", "price": 100, "pack_size": 3, "cover": "", "pack_back": "", "pack_front_layers": [], "pack_back_layers": [], "back": default_back(), "cards": []}
+
+func pack_layers(s: Dictionary, back = false) -> Array:
+	var layers = s.get("pack_back_layers" if back else "pack_front_layers",[])
+	if not layers.is_empty():
+		return layers
+	var path = s.get("pack_back" if back else "cover","")
+	if path.is_empty(): path = "res://assets/back.svg" if back else "res://assets/art_0.svg"
+	return [layer("image","封面",[0,0,600,840],path,"#ffffff")]
 
 func seed_demo() -> void:
 	for i in 3:
