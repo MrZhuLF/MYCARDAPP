@@ -45,11 +45,12 @@ func _ready() -> void:
 	check(Store.save_data(),"second generation save replaces existing file")
 	var image_path = Store.import_image("res://assets/art_0.svg")
 	check(not image_path.is_empty() and FileAccess.get_sha256(image_path) == FileAccess.get_sha256("res://assets/art_0.svg"),"original image imported without recompression")
+	DirAccess.copy_absolute("res://assets/art_0.svg","user://test-run/opaque-document")
+	check(Store.import_image("user://test-run/opaque-document") == image_path,"images without filename extensions are recognized by bytes")
 	check(Store.export_backup("user://test-run/backup.zip"),"backup includes data and images")
 	var saved_coins = int(Store.data.coins)
 	Store.data.coins=1
 	var restored = Store.restore_backup("user://test-run/backup.zip")
-	print("RESTORE: ", restored, " actual=", Store.data.coins, " expected=", saved_coins, " error=", Store.last_error)
 	check(restored and Store.data.coins == saved_coins,"backup restores balance")
 	var damaged = FileAccess.open(Store.SAVE,FileAccess.WRITE)
 	damaged.store_string("broken"); damaged.close()

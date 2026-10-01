@@ -145,19 +145,39 @@ func adjust_coins(amount: int, note: String) -> bool:
 	return commit(before)
 
 func import_image(path: String) -> String:
-	var ext = path.get_extension().to_lower()
-	if ext not in ["png", "jpg", "jpeg", "webp", "svg", "bmp", "tga"]:
+	# Android's Storage Access Framework returns content:// URIs without extensions.
+	# Identify actual bytes, not a display filename or URI suffix.
+	var bytes = FileAccess.get_file_as_bytes(path)
+	var ext = image_format(bytes)
+	if ext.is_empty():
 		last_error = "支持 PNG / JPG / WebP / SVG / BMP / TGA"
 		return ""
-	var img = Image.load_from_file(path)
-	if img == null or img.is_empty():
+	var img = Image.new()
+	if img.call("load_"+ext+"_from_buffer",bytes) != OK or img.is_empty():
 		last_error = "无法读取图片"
 		return ""
-	var target = images_dir + "/" + FileAccess.get_sha256(path) + "." + ext
-	if not FileAccess.file_exists(target) and DirAccess.copy_absolute(path, target) != OK:
-		last_error = "图片复制失败"
-		return ""
+	var hash = HashingContext.new()
+	hash.start(HashingContext.HASH_SHA256)
+	hash.update(bytes)
+	var target = images_dir + "/" + hash.finish().hex_encode() + "." + ext
+	if not FileAccess.file_exists(target):
+		var file = FileAccess.open(target,FileAccess.WRITE)
+		if file == null:
+			last_error = "图片复制失败"
+			return ""
+		file.store_buffer(bytes)
+		file.close()
 	return target
+
+func image_format(bytes: PackedByteArray) -> String:
+	if bytes.size() < 12: return ""
+	if bytes.slice(0,8) == PackedByteArray([137,80,78,71,13,10,26,10]): return "png"
+	if bytes[0] == 255 and bytes[1] == 216 and bytes[2] == 255: return "jpg"
+	if bytes.slice(0,4).get_string_from_ascii() == "RIFF" and bytes.slice(8,12).get_string_from_ascii() == "WEBP": return "webp"
+	if bytes[0] == 66 and bytes[1] == 77: return "bmp"
+	if bytes[0] in [60,32,9,10,13,239] and bytes.slice(0,mini(2048,bytes.size())).get_string_from_utf8().contains("<svg"): return "svg"
+	if bytes.size() > 18 and bytes[1] in [0,1] and bytes[2] in [1,2,3,9,10,11] and bytes[16] in [8,16,24,32]: return "tga"
+	return ""
 
 func texture(path: String) -> Texture2D:
 	if path.is_empty():
