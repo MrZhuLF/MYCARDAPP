@@ -38,13 +38,22 @@ func _ready() -> void:
 		var name_field = UI.field(body,draft.name,"卡牌名称")
 		name_field.text_changed.connect(func(t): draft.name=t; update_text_placeholder("名称",t); mark_edit())
 		var info = UI.row(body)
-		var grade = UI.field(info,draft.grade,"评级")
+		var grade = UI.select(info,Store.GRADES,maxi(0,Store.GRADES.find(draft.grade)))
+		if draft.grade not in Store.GRADES:
+			grade.add_item(draft.grade)
+			grade.select(grade.item_count-1)
 		var effect = UI.select(info,["无特效","金光","镭射","彩色"],int(draft.effect))
-		grade.text_changed.connect(func(text):
-			draft.grade=text
-			var preset = Store.GRADES.find(text.to_upper())
-			if preset >= 0: draft.effect=preset; effect.select(preset)
+		grade.item_selected.connect(func(index):
+			draft.grade=grade.get_item_text(index)
+			var preset = mini(index,3)
+			draft.effect=preset; effect.select(preset)
 			mark_edit())
+		if Store.vault_unlocked:
+			var hidden = CheckButton.new()
+			hidden.text="放入保险箱"
+			hidden.button_pressed=draft.get("hidden",false)
+			body.add_child(hidden)
+			hidden.toggled.connect(func(v): draft["hidden"]=v; mark_edit())
 		effect.item_selected.connect(func(i): draft.effect=i; mark_edit())
 		var stock_row = UI.row(body)
 		UI.label(stock_row,"剩余张数")
@@ -82,6 +91,9 @@ func _ready() -> void:
 	UI.button(tools,"↑",func(): reorder(1),true)
 	UI.button(tools,"复制",duplicate_layer,true)
 	UI.button(tools,"删除",delete_layer,true)
+	var alignment = UI.row(body)
+	UI.button(alignment,"水平居中",func(): center_layer(true),true)
+	UI.button(alignment,"垂直居中",func(): center_layer(false),true)
 	var history = UI.row(body)
 	UI.button(history,"撤销",undo,true)
 	UI.button(history,"重做",redo,true)
@@ -189,6 +201,14 @@ func current() -> Dictionary:
 		return {}
 	return canvas.layers[canvas.active]
 
+func center_layer(horizontal: bool) -> void:
+	var l = current()
+	if l.is_empty() or l.get("locked",false): return
+	if horizontal: l.x=(600.0-l.w)/2.0
+	else: l.y=(840.0-l.h)/2.0
+	mark_edit()
+	refresh_properties()
+
 func refresh_properties() -> void:
 	UI.clear(properties)
 	if is_shared_view():
@@ -276,8 +296,11 @@ func delete_layer() -> void:
 
 func refresh_templates() -> void:
 	templates.clear()
-	for t in Store.data.templates:
+	for i in Store.data.templates.size():
+		var t = Store.data.templates[i]
+		if not Store.visible_item(t): continue
 		templates.add_item(t.name)
+		templates.set_item_metadata(templates.item_count-1,i)
 
 func save_template() -> void:
 	var dialog = ConfirmationDialog.new()
@@ -288,7 +311,7 @@ func save_template() -> void:
 	add_child(dialog)
 	dialog.confirmed.connect(func():
 		var before = Store.data.duplicate(true)
-		Store.data.templates.append({"id":Store.uid(),"name":input.text,"front":draft.front.duplicate(true),"back":draft.back.duplicate(true)})
+		Store.data.templates.append({"id":Store.uid(),"name":input.text,"hidden":draft.get("hidden",false) or Store.series_by_id(series_id).get("hidden",false),"front":draft.front.duplicate(true),"back":draft.back.duplicate(true)})
 		if Store.commit(before): refresh_templates(); notify.emit("模板已保存")
 		else: notify.emit(Store.last_error)
 		dialog.queue_free())
@@ -298,7 +321,7 @@ func save_template() -> void:
 func apply_template() -> void:
 	if templates.selected < 0:
 		return
-	var t = Store.data.templates[templates.selected]
+	var t = Store.data.templates[templates.get_item_metadata(templates.selected)]
 	for face_name in ["front","back"]:
 		var replacements = {}
 		for l in draft[face_name]:
@@ -313,7 +336,7 @@ func apply_template() -> void:
 func delete_template() -> void:
 	if templates.selected < 0:
 		return
-	var id = Store.data.templates[templates.selected].id
+	var id = Store.data.templates[templates.get_item_metadata(templates.selected)].id
 	var dialog = ConfirmationDialog.new()
 	dialog.dialog_text = "删除此模板？"
 	add_child(dialog)
@@ -328,7 +351,7 @@ func delete_template() -> void:
 func update_template() -> void:
 	if templates.selected < 0:
 		return
-	var index = templates.selected
+	var index = int(templates.get_item_metadata(templates.selected))
 	var dialog = ConfirmationDialog.new()
 	dialog.title = "更新模板"
 	var input = LineEdit.new()
@@ -340,7 +363,8 @@ func update_template() -> void:
 		Store.data.templates[index].name = input.text
 		Store.data.templates[index].front = draft.front.duplicate(true)
 		Store.data.templates[index].back = draft.back.duplicate(true)
-		if Store.commit(before): refresh_templates(); templates.select(index); notify.emit("模板已更新")
+		Store.data.templates[index]["hidden"]=draft.get("hidden",false) or Store.series_by_id(series_id).get("hidden",false)
+		if Store.commit(before): refresh_templates(); notify.emit("模板已更新")
 		else: notify.emit(Store.last_error)
 		dialog.queue_free())
 	dialog.canceled.connect(dialog.queue_free)
@@ -367,6 +391,7 @@ func save() -> void:
 				break
 		if not found:
 			s.cards.append(draft.duplicate(true))
+		Store.propagate_hidden(series_id,draft.id)
 	if Store.commit(before):
 		dirty = false
 		notify.emit("已保存")

@@ -1,0 +1,8 @@
+Model Information:
+* title:	Trading Card Pack
+* source:	https://sketchfab.com/3d-models/trading-card-pack-9dd4721b3c8945a9879d375662d74b84
+* author:	Myles Griffen (https://sketchfab.com/mylesgriffen)
+
+Model License:
+* license type:	SKETCHFAB Standard (https://sketchfab.com/licenses)
+* requirements:	Under basic restrictions, use worldwide, on all types of media, commercially or not, and in all types of derivative works

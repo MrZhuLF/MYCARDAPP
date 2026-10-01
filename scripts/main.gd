@@ -13,6 +13,8 @@ var overlay: Control
 var toast_timer = 0.0
 var last_opened: Array = []
 var opening_pack = false
+var suspended_editor: CardEditor
+var suspended_form: Control
 
 func _ready() -> void:
 	theme = UI.theme()
@@ -21,6 +23,7 @@ func _ready() -> void:
 	stage.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(stage)
 	stage.pack_selected.connect(open_pack)
+	stage.shelf_swiped.connect(func(direction): shelf_page+=direction; navigate("货架"))
 	stage.shelf()
 	var header = HBoxContainer.new()
 	header.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
@@ -73,6 +76,8 @@ func _process(delta: float) -> void:
 		if toast_timer <= 0: toast_label.hide()
 
 func _notification(what: int) -> void:
+	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED] and is_node_ready() and Store.vault_unlocked:
+		lock_vault()
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
 		if opening_pack: return
 		if is_instance_valid(overlay): close_overlay()
@@ -98,9 +103,9 @@ func navigate(page: String) -> void:
 		b.modulate = Color("70dbba") if b.text == page else Color.WHITE
 	match page:
 		"货架":
-			shelf_page = clampi(shelf_page,0,maxi(0,ceili(Store.data.series.size()/3.0)-1))
+			shelf_page = clampi(shelf_page,0,maxi(0,ceili(Store.visible_series().size()/9.0)-1))
 			stage.shelf(shelf_page)
-			if Store.data.series.size() > 3:
+			if Store.visible_series().size() > 9:
 				content.show()
 				content.mouse_filter = Control.MOUSE_FILTER_IGNORE
 				content.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
@@ -113,9 +118,9 @@ func navigate(page: String) -> void:
 				var row = UI.row(layout)
 				UI.button(row,"‹",func(): shelf_page=maxi(0,shelf_page-1); navigate("货架"))
 				UI.spacer(row)
-				UI.label(row,"%d / %d" % [shelf_page+1,ceili(Store.data.series.size()/3.0)])
+				UI.label(row,"%d / %d" % [shelf_page+1,ceili(Store.visible_series().size()/9.0)])
 				UI.spacer(row)
-				UI.button(row,"›",func(): shelf_page=mini(ceili(Store.data.series.size()/3.0)-1,shelf_page+1); navigate("货架"))
+				UI.button(row,"›",func(): shelf_page=mini(ceili(Store.visible_series().size()/9.0)-1,shelf_page+1); navigate("货架"))
 		"设计": series_list()
 		"收藏": collection()
 		"记账": ledger()
@@ -148,7 +153,7 @@ func series_list(query = "") -> void:
 	var list = scroller(col)
 	var populate = func(q):
 		UI.clear(list)
-		for s in Store.data.series:
+		for s in Store.visible_series():
 			if not q.is_empty() and not s.name.to_lower().contains(q.to_lower()): continue
 			var panel = PanelContainer.new()
 			list.add_child(panel)
@@ -158,7 +163,7 @@ func series_list(query = "") -> void:
 			info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			var label = UI.label(info,s.name,20)
 			label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			UI.label(info,"%d 种 · 剩余 %d 张" % [s.cards.size(),Store.stock(s)],14,Color("9bafb8"))
+			UI.label(info,"%d 种 · 剩余 %d 张" % [s.cards.filter(Store.visible_item).size(),Store.stock(s)],14,Color("9bafb8"))
 			var buttons = UI.row(info)
 			UI.button(buttons,"打开",func(): selected_series=s.id; cards_list(),true)
 			UI.button(buttons,"编辑",func(): edit_series(s))
@@ -168,7 +173,7 @@ func series_list(query = "") -> void:
 
 func cards_list(query = "") -> void:
 	var s = Store.series_by_id(selected_series)
-	if s.is_empty(): series_list(); return
+	if s.is_empty() or not Store.visible_item(s): series_list(); return
 	UI.clear(content)
 	var col = UI.column(content)
 	var bar = UI.row(col)
@@ -179,6 +184,7 @@ func cards_list(query = "") -> void:
 	var populate = func(q):
 		UI.clear(list)
 		for c in s.cards:
+			if not Store.visible_item(c): continue
 			if not q.is_empty() and not (c.name+" "+c.grade).to_lower().contains(q.to_lower()): continue
 			var panel = PanelContainer.new()
 			list.add_child(panel)
@@ -204,6 +210,7 @@ func cards_list(query = "") -> void:
 func edit_series(original: Dictionary) -> void:
 	var s = original.duplicate(true)
 	var dialog = new_overlay()
+	dialog.set_meta("resumable",true)
 	var panel = PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	panel.offset_left = 18; panel.offset_right = -18; panel.offset_top = 72; panel.offset_bottom = -60
@@ -214,6 +221,12 @@ func edit_series(original: Dictionary) -> void:
 	UI.button(actions,"保存",func():
 		if save_series(s): close_overlay(); navigate("设计"),true)
 	UI.field(col,s.name,"系列名称").text_changed.connect(func(t): s.name=t)
+	if Store.vault_unlocked:
+		var hidden = CheckButton.new()
+		hidden.text="放入保险箱"
+		hidden.button_pressed=s.get("hidden",false)
+		col.add_child(hidden)
+		hidden.toggled.connect(func(v): s["hidden"]=v)
 	var price_row = UI.row(col)
 	UI.label(price_row,"每包价格")
 	UI.number(price_row,s.price).value_changed.connect(func(v): s.price=int(v))
@@ -251,8 +264,9 @@ func save_series(s: Dictionary) -> bool:
 	var existing = Store.series_by_id(s.id)
 	if existing.is_empty(): Store.data.series.append(s.duplicate(true))
 	else:
-		for key in ["name","price","pack_size","cover","pack_back","pack_front_layers","pack_back_layers"]:
-			existing[key] = s.get(key,[] if key.ends_with("layers") else "")
+		for key in ["name","price","pack_size","cover","pack_back","pack_front_layers","pack_back_layers","hidden"]:
+			existing[key] = s.get(key,[] if key.ends_with("layers") else false if key == "hidden" else "")
+	Store.propagate_hidden(s.id)
 	if Store.commit(before): return true
 	toast(Store.last_error)
 	return false
@@ -323,6 +337,7 @@ func collection() -> void:
 		UI.clear(grid)
 		var filtered: Array = []
 		for card in Store.data.owned:
+			if not Store.owned_visible(card): continue
 			if query.is_empty() or (card.name+" "+card.series_name+" "+card.grade).to_lower().contains(query.to_lower()): filtered.append(card)
 		filtered.reverse()
 		for i in filtered.size():
@@ -352,6 +367,8 @@ func ledger() -> void:
 		else: toast(Store.last_error))
 	var list = scroller(col)
 	for entry in Store.data.ledger:
+		if not Store.visible_item(entry): continue
+		if not Store.vault_unlocked and Store.data.series.any(func(s): return s.get("hidden",false) and (s.id == entry.get("series_id","") or s.name == entry.note)): continue
 		var row = UI.row(list)
 		var text = UI.column(row)
 		text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -397,7 +414,7 @@ func overlay_bar(parent: Control, bottom = false) -> HBoxContainer:
 
 func open_pack(series_id: String) -> void:
 	var s = Store.series_by_id(series_id)
-	if s.is_empty(): return
+	if s.is_empty() or not Store.visible_item(s): return
 	var dialog = new_overlay()
 	var view = preview_stage(dialog)
 	view.show_pack(s)
@@ -408,25 +425,35 @@ func open_pack(series_id: String) -> void:
 	UI.spacer(top)
 	UI.label(top,"%d 张" % s.pack_size,16)
 	var bottom = overlay_bar(dialog,true)
-	var buy = UI.button(bottom,"拆包  ·  %d" % s.price,func(): pass,true)
+	var buy = HoldToOpen.new()
+	buy.text="长按拆包 · %d" % s.price
+	buy.custom_minimum_size.y=54
+	buy.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	bottom.add_child(buy)
 	buy.disabled = Store.stock(s) < int(s.pack_size)
-	if buy.disabled: buy.text = "库存不足"
-	buy.pressed.connect(func():
+	if buy.disabled: buy.text="库存不足"
+	buy.progress_changed.connect(func(value):
+		view.set_tear_progress(value)
+		buy.text="长按拆包 · %d%%" % roundi(value*100) if value>0 else "长按拆包 · %d" % s.price)
+	buy.completed.connect(func():
 		if opening_pack: return
-		buy.disabled = true
 		var result = Store.purchase(series_id)
 		if result.has("error"):
-			toast(result.error); buy.disabled=false; return
-		last_opened = result.cards
-		opening_pack = true
-		back.disabled = true
-		buy.text = "…"
-		await view.tear()
-		opening_pack = false
+			toast(result.error); buy.reset(); return
+		last_opened=result.cards
+		opening_pack=true
+		back.disabled=true
+		buy.text="…"
+		view.tear()
+		await get_tree().create_timer(0.45).timeout
+		if not is_instance_valid(dialog) or overlay != dialog: return
+		opening_pack=false
 		view_cards(last_opened))
 
 func view_cards(cards: Array, index = 0, back: Array = []) -> void:
-	if cards.is_empty(): return
+	cards=cards.filter(func(c): return Store.owned_visible(c) if c.has("owned_id") else Store.visible_item(c))
+	if cards.is_empty(): close_overlay(); return
+	index=clampi(index,0,cards.size()-1)
 	var c = cards[index]
 	var dialog = new_overlay()
 	var view = preview_stage(dialog)
@@ -434,9 +461,17 @@ func view_cards(cards: Array, index = 0, back: Array = []) -> void:
 	var top = overlay_bar(dialog)
 	UI.button(top,"‹",close_overlay)
 	UI.spacer(top)
-	UI.label(top,c.grade,22,Color("e2c48b"))
+	UI.label(top,c.grade,22,Store.grade_color(c.grade))
 	UI.spacer(top)
 	UI.label(top,"%d / %d" % [index+1,cards.size()],15)
+	if c.has("owned_id"):
+		UI.button(top,"丢弃",func(): confirm("丢弃这张卡牌？",func():
+			if not Store.discard_owned(c.owned_id): toast(Store.last_error); return
+			var remaining=cards.filter(func(card): return card.owned_id != c.owned_id)
+			last_opened=last_opened.filter(func(card): return card.owned_id != c.owned_id)
+			if current_page == "收藏": navigate("收藏")
+			if remaining.is_empty(): close_overlay()
+			else: view_cards(remaining,mini(index,remaining.size()-1),back)))
 	var bottom = overlay_bar(dialog,true)
 	var previous = UI.button(bottom,"‹",func(): view_cards(cards,index-1,back))
 	previous.disabled = index == 0
@@ -454,7 +489,7 @@ func pick_image(callback: Callable) -> void:
 	file_dialog(FileDialog.FILE_MODE_OPEN_FILE,PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp,*.svg,*.bmp,*.tga ; 图片"]),func(path):
 		var imported = Store.import_image(path)
 		if imported.is_empty(): toast(Store.last_error)
-		else: callback.call(imported))
+		elif callback.is_valid(): callback.call(imported))
 
 func file_dialog(mode: FileDialog.FileMode, filters: PackedStringArray, callback: Callable) -> void:
 	var dialog = FileDialog.new()
@@ -486,12 +521,13 @@ func settings() -> void:
 	dialog.add_child(panel)
 	var col = UI.column(panel)
 	UI.button(col,"返回",close_overlay)
-	UI.button(col,"导出备份",func(): file_dialog(FileDialog.FILE_MODE_SAVE_FILE,PackedStringArray(["*.zip ; 备份"]),func(path): toast("已导出" if Store.export_backup(path) else "导出失败")))
-	UI.button(col,"恢复备份",func(): file_dialog(FileDialog.FILE_MODE_OPEN_FILE,PackedStringArray(["*.zip ; 备份"]),func(path): confirm("用备份替换当前数据？",func():
-		if Store.restore_backup(path): close_overlay(); navigate("货架"); toast("已恢复")
+	UI.button(col,"导出备份",func(): file_dialog(FileDialog.FILE_MODE_SAVE_FILE,PackedStringArray(["*.zip ; 备份 ; application/zip"]),func(path): toast("已导出" if Store.export_backup(path) else Store.last_error)))
+	UI.button(col,"恢复备份",func(): file_dialog(FileDialog.FILE_MODE_OPEN_FILE,PackedStringArray(["*.zip ; 备份 ; application/zip"]),func(path): confirm("用备份替换当前数据？",func():
+		if Store.restore_backup(path): clear_suspended(); close_overlay(); navigate("货架"); toast("已恢复")
 		else: toast(Store.last_error))))
+	UI.button(col,"保险箱",vault_menu)
 	UI.button(col,"开源许可",show_licenses)
-	UI.label(col,"MYCARD  0.1.0",14,Color("8398a3"))
+	UI.label(col,"MYCARD  0.2.0",14,Color("8398a3"))
 	UI.label(col,"离线存储 · 原图备份",14,Color("8398a3"))
 
 func show_licenses() -> void:
@@ -508,3 +544,70 @@ func show_licenses() -> void:
 	text.size_flags_vertical=Control.SIZE_EXPAND_FILL
 	text.text=Engine.get_license_text()+"\n\n"+JSON.stringify(Engine.get_copyright_info(),"\t")+"\n\n"+JSON.stringify(Engine.get_license_info(),"\t")
 	col.add_child(text)
+
+func lock_vault() -> void:
+	Store.vault_unlocked=false
+	opening_pack=false
+	last_opened.clear()
+	for dialog in find_children("*","Window",true,false):
+		if not dialog is FileDialog: dialog.hide()
+	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
+	if is_instance_valid(editor):
+		if is_instance_valid(suspended_editor): suspended_editor.queue_free()
+		suspended_editor=editor
+		editor.hide()
+		editor=null
+	if is_instance_valid(overlay) and overlay.get_meta("resumable",false):
+		if is_instance_valid(suspended_form): suspended_form.queue_free()
+		suspended_form=overlay
+		overlay.hide()
+		overlay=null
+	else: close_overlay()
+	navigate("货架")
+
+func clear_suspended() -> void:
+	if is_instance_valid(suspended_editor): suspended_editor.queue_free()
+	if is_instance_valid(suspended_form): suspended_form.queue_free()
+	suspended_editor=null
+	suspended_form=null
+
+func vault_menu() -> void:
+	var dialog=new_overlay()
+	var panel=PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left=24; panel.offset_right=-24; panel.offset_top=160; panel.offset_bottom=-160
+	dialog.add_child(panel)
+	var col=UI.column(panel)
+	UI.button(col,"返回",settings)
+	if Store.vault_unlocked:
+		UI.button(col,"锁定保险箱",lock_vault)
+		UI.button(col,"修改密码",func(): vault_password(true))
+	else:
+		vault_password(not Store.has_vault())
+
+func vault_password(set_password: bool) -> void:
+	var dialog=new_overlay()
+	var panel=PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left=24; panel.offset_right=-24; panel.offset_top=180; panel.offset_bottom=-200
+	dialog.add_child(panel)
+	var col=UI.column(panel)
+	UI.button(col,"返回",settings)
+	var password=UI.field(col,"","设置密码（至少 4 位）" if set_password else "密码")
+	password.secret=true
+	var repeat: LineEdit
+	if set_password:
+		repeat=UI.field(col,"","再次输入密码")
+		repeat.secret=true
+	UI.button(col,"保存并解锁" if set_password else "解锁",func():
+		if set_password and password.text != repeat.text: toast("两次密码不一致"); return
+		var success=Store.set_vault_password(password.text) if set_password else Store.unlock_vault(password.text)
+		if not success: toast(Store.last_error); return
+		close_overlay()
+		navigate("货架")
+		if is_instance_valid(suspended_editor):
+			editor=suspended_editor; suspended_editor=null
+			editor.show(); editor.move_to_front()
+		elif is_instance_valid(suspended_form):
+			overlay=suspended_form; suspended_form=null
+			overlay.show(); overlay.move_to_front())

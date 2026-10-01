@@ -3,7 +3,9 @@ extends Node
 signal changed
 var SAVE = "user://collection.json"
 var images_dir = "user://images"
-const GRADES = ["N", "R", "SR", "SSR"]
+const GRADES = ["N", "R", "SR", "SSR", "UR"]
+const GRADE_COLORS = [Color("e8eef5"),Color("469bff"),Color("a066ff"),Color("f5d24b"),Color("ff853d")]
+var vault_unlocked = false
 var data: Dictionary = {}
 var last_error = ""
 var textures: Dictionary = {}
@@ -41,6 +43,8 @@ func load_data() -> void:
 func valid_data(value: Variant) -> bool:
 	if not value is Dictionary or value.get("version") != 1:
 		return false
+	if value.has("vault"):
+		if not value.vault is Dictionary or not value.vault.get("salt") is String or not value.vault.get("hash") is String: return false
 	for key in ["series", "templates", "owned", "ledger"]:
 		if not value.get(key) is Array:
 			return false
@@ -135,6 +139,7 @@ func series_by_id(id: String) -> Dictionary:
 func stock(s: Dictionary) -> int:
 	var count = 0
 	for c in s.get("cards", []):
+		if not visible_item(c) or not visible_item(s): continue
 		count += maxi(0, int(c.remaining))
 	return count
 
@@ -142,6 +147,7 @@ func purchase(series_id: String) -> Dictionary:
 	var s = series_by_id(series_id)
 	if s.is_empty():
 		return {"error": "系列不存在"}
+	if not visible_item(s): return {"error": "请先解锁保险箱"}
 	var amount = int(s.get("pack_size", 3))
 	var cost = int(s.get("price", 100))
 	if amount < 1 or cost < 0:
@@ -155,6 +161,7 @@ func purchase(series_id: String) -> Dictionary:
 	for i in amount:
 		var ticket = rng.randi_range(1, stock(s))
 		for c in s.cards:
+			if not visible_item(c) or int(c.remaining) <= 0: continue
 			ticket -= maxi(0, int(c.remaining))
 			if ticket <= 0:
 				c.remaining = int(c.remaining) - 1
@@ -163,6 +170,7 @@ func purchase(series_id: String) -> Dictionary:
 				snapshot["owned_id"] = uid()
 				snapshot["series_name"] = s.name
 				snapshot["series_id"] = s.id
+				snapshot["hidden"] = bool(s.get("hidden",false)) or bool(c.get("hidden",false))
 				snapshot["acquired"] = Time.get_datetime_string_from_system()
 				if snapshot.get("shared_back", true):
 					snapshot.back = s.get("back", default_back()).duplicate(true)
@@ -170,7 +178,7 @@ func purchase(series_id: String) -> Dictionary:
 				results.append(snapshot)
 				break
 	data.coins = int(data.coins) - cost
-	data.ledger.push_front({"amount": -cost, "note": s.name, "time": Time.get_datetime_string_from_system()})
+	data.ledger.push_front({"amount": -cost, "note": s.name, "series_id":s.id, "hidden":s.get("hidden",false), "time": Time.get_datetime_string_from_system()})
 	if not commit(before):
 		return {"error": last_error}
 	return {"cards": results}
@@ -282,19 +290,58 @@ func seed_demo() -> void:
 		data.series.append(s)
 
 func export_backup(path: String) -> bool:
+	# SAF document providers may not support the read/write seeking used by ZIP.
+	# Finish the archive locally, then stream it to the user's document URI.
+	var staging = SAVE.get_base_dir()+"/backup-export.zip"
+	if not write_backup_zip(staging):
+		last_error = "生成备份失败"
+		return false
+	return copy_stream(staging,path)
+
+func copy_stream(source: String, target: String) -> bool:
+	if ProjectSettings.globalize_path(source) == ProjectSettings.globalize_path(target):
+		return FileAccess.file_exists(source)
+	var input = FileAccess.open(source,FileAccess.READ)
+	if input == null:
+		last_error = "无法读取备份"
+		return false
+	var output = FileAccess.open(target,FileAccess.WRITE)
+	if output == null:
+		last_error = "无法写入所选位置，请选择本机下载文件夹"
+		return false
+	var length = input.get_length()
+	var written = 0
+	while written < length:
+		var chunk = input.get_buffer(mini(65536,length-written))
+		if chunk.is_empty(): break
+		output.store_buffer(chunk)
+		if output.get_error() != OK: break
+		written += chunk.size()
+	output.flush()
+	var success = written == length and output.get_error() == OK
+	input.close()
+	output.close()
+	if not success: last_error = "备份写入不完整，请更换保存位置"
+	return success
+
+func write_backup_zip(path: String) -> bool:
 	var zip = ZIPPacker.new()
 	if zip.open(path) != OK:
 		return false
-	zip.start_file("collection.json")
-	zip.write_file(JSON.stringify(data).to_utf8_buffer())
-	zip.close_file()
+	if zip.start_file("collection.json") != OK or zip.write_file(JSON.stringify(data).to_utf8_buffer()) != OK or zip.close_file() != OK:
+		zip.close()
+		return false
 	for filename in DirAccess.get_files_at(images_dir):
-		zip.start_file("images/" + filename)
-		zip.write_file(FileAccess.get_file_as_bytes(images_dir + "/" + filename))
-		zip.close_file()
+		if zip.start_file("images/" + filename) != OK or zip.write_file(FileAccess.get_file_as_bytes(images_dir + "/" + filename)) != OK or zip.close_file() != OK:
+			zip.close()
+			return false
 	return zip.close() == OK
 
 func restore_backup(path: String) -> bool:
+	if path.begins_with("content://"):
+		var local = SAVE.get_base_dir()+"/backup-import.zip"
+		if not copy_stream(path,local): return false
+		path=local
 	var zip = ZIPReader.new()
 	if zip.open(path) != OK:
 		last_error = "无法打开备份"
@@ -332,4 +379,78 @@ func restore_backup(path: String) -> bool:
 		writable = was_writable
 		return false
 	textures.clear()
+	vault_unlocked=false
 	return true
+
+func visible_item(item: Dictionary) -> bool:
+	return vault_unlocked or not item.get("hidden",false)
+
+func visible_series() -> Array:
+	return data.series.filter(visible_item)
+
+func owned_visible(card: Dictionary) -> bool:
+	if not visible_item(card): return false
+	var s = series_by_id(card.get("series_id",""))
+	if not visible_item(s): return false
+	for design in s.get("cards",[]):
+		if design.id == card.id and not visible_item(design): return false
+	return true
+
+func discard_owned(id: String) -> bool:
+	var before = data.duplicate(true)
+	var found = false
+	for i in data.owned.size():
+		if data.owned[i].owned_id == id and owned_visible(data.owned[i]):
+			data.owned.remove_at(i)
+			found=true
+			break
+	if not found:
+		last_error="卡牌不存在或已隐藏"
+		return false
+	return commit(before)
+
+func has_vault() -> bool:
+	return not data.get("vault",{}).get("hash","").is_empty()
+
+func password_hash(password: String, salt: String) -> String:
+	var result = (salt+password).sha256_text()
+	for i in 12000: result=(result+salt).sha256_text()
+	return result
+
+func set_vault_password(password: String) -> bool:
+	if has_vault() and not vault_unlocked:
+		last_error="请先解锁保险箱"
+		return false
+	if password.length() < 4:
+		last_error="密码至少 4 位"
+		return false
+	var before=data.duplicate(true)
+	var salt=Crypto.new().generate_random_bytes(16).hex_encode()
+	data["vault"]={"salt":salt,"hash":password_hash(password,salt)}
+	if not commit(before): return false
+	vault_unlocked=true
+	return true
+
+func unlock_vault(password: String) -> bool:
+	if not has_vault(): return false
+	if password_hash(password,data.vault.salt) != data.vault.hash:
+		last_error="密码错误"
+		return false
+	vault_unlocked=true
+	return true
+
+func grade_color(grade: String) -> Color:
+	return GRADE_COLORS[maxi(0,GRADES.find(grade))]
+
+func propagate_hidden(series_id: String, card_id = "") -> void:
+	# Preserve hidden state in collection snapshots even after deleting designs.
+	for owned in data.owned:
+		if owned.get("series_id","") == series_id and (card_id.is_empty() or owned.id == card_id):
+			var s=series_by_id(series_id)
+			if s.get("hidden",false): owned["hidden"]=true
+			else:
+				for c in s.get("cards",[]):
+					if c.id == owned.id: owned["hidden"]=c.get("hidden",false)
+	for entry in data.ledger:
+		if entry.get("series_id","") == series_id:
+			entry["hidden"]=series_by_id(series_id).get("hidden",false)

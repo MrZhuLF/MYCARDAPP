@@ -2,6 +2,7 @@ class_name CardStage
 extends SubViewportContainer
 
 signal pack_selected(series_id: String)
+signal shelf_swiped(direction: int)
 var viewport: SubViewport
 var world: Node3D
 var camera: Camera3D
@@ -32,14 +33,7 @@ func _ready() -> void:
 	env.ambient_light_color = Color("afccd6")
 	env.ambient_light_energy = 0.3
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
-	var sky = Sky.new()
-	var sky_mat = ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color("577c97")
-	sky_mat.sky_horizon_color = Color("d7dfdd")
-	sky_mat.ground_bottom_color = Color("1a222d")
-	sky.sky_material = sky_mat
-	env.sky = sky
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	env_node.environment = env
 	world.add_child(env_node)
 	var key = DirectionalLight3D.new()
@@ -93,29 +87,30 @@ func shelf(page = 0) -> void:
 			light_mat.emission = Color("e7c794")
 			light_mat.emission_energy_multiplier = 1.3
 			CardObjects.box(display,Vector3(5.1,0.027,0.06),Vector3(0,y-0.09,0.75),light_mat)
-	for row in 3:
-		var index = page*3+row
-		if index >= Store.data.series.size():
-			continue
-		var series = Store.data.series[index]
+	var series_list = Store.visible_series()
+	for slot in 9:
+		var index = page*9+slot
+		if index >= series_list.size(): continue
+		var series = series_list[index]
+		var row = floori(slot/3.0)
+		var column = slot%3
 		var y = 4.65-row*2.25
-		for column in 3:
-			var pack = CardObjects.pack(display,series)
-			pack.position = Vector3((column-1)*1.56,y+0.85,0.32)
-			pack.rotation_degrees = Vector3(-9,(column-1)*-5,0)
-			var body = StaticBody3D.new()
-			body.set_meta("series_id",series.id)
-			pack.add_child(body)
-			var shape = CollisionShape3D.new()
-			var volume = BoxShape3D.new()
-			volume.size = Vector3(1.1,1.72,0.24)
-			shape.shape = volume
-			body.add_child(shape)
+		var pack = CardObjects.pack(display,series)
+		pack.position = Vector3((column-1)*1.56,y+0.95,0.32)
+		pack.rotation_degrees = Vector3(-7,(column-1)*-5,0)
+		var body = StaticBody3D.new()
+		body.set_meta("series_id",series.id)
+		pack.add_child(body)
+		var shape = CollisionShape3D.new()
+		var volume = BoxShape3D.new()
+		volume.size = Vector3(1.1,1.85,0.24)
+		shape.shape = volume
+		body.add_child(shape)
 		var label = Label3D.new()
-		label.text = "%s   ·   %d" % [series.name,series.price]
-		label.font_size = 42
+		label.text = "%s · %d" % [series.name.left(7),series.price]
+		label.font_size = 30
 		label.pixel_size = 0.004
-		label.position = Vector3(0,y-0.03,1.101)
+		label.position = Vector3((column-1)*1.56,y-0.03,1.101)
 		label.modulate = Color("e1d5bd")
 		label.outline_size = 0
 		display.add_child(label)
@@ -135,22 +130,23 @@ func show_card(card: Dictionary, back: Array = []) -> void:
 	camera.fov = 43
 	camera.position = Vector3(0,0,4.5)
 	camera.look_at(Vector3.ZERO)
+	var aura = ShaderMaterial.new()
+	aura.shader=preload("res://shaders/aura.gdshader")
+	aura.set_shader_parameter("aura_color",Store.grade_color(card.grade))
+	CardObjects.face(display,Vector2(3.7,4.1),-0.18,aura)
 	item = CardObjects.card(display,card,back)
 	item.rotation_degrees = Vector3(-4,-12,0)
 
+func set_tear_progress(value: float) -> void:
+	if item: CardObjects.set_tear(item,value)
+
 func tear() -> void:
-	if item == null:
-		return
+	if item == null: return
 	opening = true
-	var seal = item.get_node_or_null("TopSeal")
-	var tween = create_tween().set_parallel(true)
-	if seal:
-		tween.tween_property(seal,"position",Vector3(1.6,1.6,0),0.65).set_trans(Tween.TRANS_CUBIC)
-		tween.tween_property(seal,"rotation:z",-1.4,0.65)
-	tween.tween_property(item,"rotation:y",0.0,0.25)
-	tween.chain().tween_property(item,"position:y",-3.0,0.45).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	await tween.finished
-	opening = false
+	set_tear_progress(1.0)
+	var tween = create_tween()
+	tween.tween_property(item,"position:y",-3.0,0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tween.finished.connect(func(): opening=false)
 
 func _gui_input(event: InputEvent) -> void:
 	if opening:
@@ -161,6 +157,9 @@ func _gui_input(event: InputEvent) -> void:
 			dragging = true
 			moved = false
 		else:
+			var swipe = event.position-pressed_at
+			if dragging and moved and mode == "shelf" and absf(swipe.x)>55 and absf(swipe.x)>absf(swipe.y)*1.2:
+				shelf_swiped.emit(1 if swipe.x < 0 else -1)
 			if dragging and not moved and mode == "shelf":
 				var from = camera.project_ray_origin(event.position)
 				var ray = PhysicsRayQueryParameters3D.create(from,from+camera.project_ray_normal(event.position)*50)
